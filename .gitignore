@@ -1,0 +1,17 @@
+# Python 运行缓存和本地环境。
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# 训练权重与运行输出单独保存，不提交到代码仓库。
+*.pth
+*.pt
+*.safetensors
+*.log
+checkpoints/
+out/
+
+# 正式语料不提交；保留已有的 64 条样本，供检查数据格式。
+dataset/*.jsonl
+!dataset/pretrain_smoke.jsonl
