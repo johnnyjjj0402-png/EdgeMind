@@ -20,6 +20,19 @@ EdgeMind 以「小参数，大能力」为目标，是一个从零训练、持�
 
 工程坚持极简主义、第一性原理和小步迭代。模型核心组件采用手写 PyTorch 实现；配置与分词复用成熟库，每次增加一个当前需要的功能，并解释设计原因。
 
+> [!NOTE]
+> **致谢、来源与后续方向**
+>
+> 感谢 [MiniMind](https://github.com/jingyaogong/minimind) 作者 [Jingyao Gong](https://github.com/jingyaogong) 及社区贡献者，开放小模型训练代码、分词器、对话模板、语料与实践经验。EdgeMind 首版参考其模型组件、数据组织和分阶段训练思路，并复用分词器、对话模板与阶段语料，以尽快获得可见成品、积累完整流程的经验。
+>
+> 同时感谢 [PyTorch](https://github.com/pytorch/pytorch)、Hugging Face 的 [Transformers](https://github.com/huggingface/transformers) 与 [Tokenizers](https://github.com/huggingface/tokenizers)、[Jinja](https://github.com/pallets/jinja)、[Python](https://www.python.org/) 及其上游依赖、公开数据贡献者和开源社区，为本项目提供计算、配置、分词、对话排版与基础工具。
+>
+> **v1.0 的后续重点是端侧验证**：在预训练与 SFT 基础上，补充基本对话和简单前端，尝试模型转换、量化与一台已有设备上的离线推理，并记录能力变化、内存占用与生成速度。
+>
+> **v2.0 及以后重点开展自己的能力实验**：逐项尝试数据质量改进、强模型的教学示范、可验证任务反馈、持续学习、模型结构调整与端侧压缩，用一致的评测比较收益和成本。这些是后续研究方向，结果将以实际实验为准。
+>
+> MiniMind 复用内容保留 [Apache-2.0 许可全文](LICENSES/Apache-2.0.txt)及上游来源说明；其他依赖和数据遵循各自的许可条件。具体来源、复用与改写范围见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，项目许可范围见文末的[借鉴与来源](#借鉴与来源)。
+
 ## 当前进度
 
 **当前版本：v0.2 · SFT 准备阶段。v0.1 首轮从零预训练已在 AutoDL 完成。**
