@@ -12,6 +12,7 @@ __pycache__/
 checkpoints/
 out/
 
-# 正式语料不提交；保留已有的 64 条样本，供检查数据格式。
+# 正式语料不提交；只保留少量预训练与 SFT 检查样本，供克隆项目后验证数据格式。
 dataset/*.jsonl
 !dataset/pretrain_smoke.jsonl
+!dataset/sft_smoke.jsonl
