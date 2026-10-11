@@ -1,6 +1,4 @@
 # 参考 MiniMind 的模型文件组织方式：全部模型组件按依赖顺序放在同一文件中。
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -83,9 +81,10 @@ def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, si
     cos = cos.unsqueeze(0).unsqueeze(2)
     sin = sin.unsqueeze(0).unsqueeze(2)
 
-    # 旋转公式 x' = x·cos + rotate_half(x)·sin；q 和 k 必须使用同一张角度表，相对位置才成立。
-    q_embed = q * cos + rotate_half(q) * sin
-    k_embed = k * cos + rotate_half(k) * sin
+    # 用同一张角度表旋转查询；float32 角度表会提高计算精度，结束后恢复查询原来的精度。
+    q_embed = (q * cos + rotate_half(q) * sin).to(q.dtype)
+    # 键也恢复原来的精度，保证查询、键和值可一起进入 SDPA，避免额外保留 float32 查询和键。
+    k_embed = (k * cos + rotate_half(k) * sin).to(k.dtype)
 
     # 输出形状与输入完全一致，只是每个位置的向量被旋转了对应角度。
     return q_embed, k_embed
@@ -106,7 +105,8 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return expanded.reshape(bs, slen, num_key_value_heads * n_rep, head_dim)
 
 
-# GQA 注意力层：参考 MiniMind 的手动计算分支，首版不启用 flash 分支与 QK-norm。
+# GQA 注意力层：参考 MiniMind 的 SDPA 调用方式，显式处理填充位置和历史键值缓存。
+# 来源：https://github.com/jingyaogong/minimind/blob/f659b55761b754d306bd140573493a6543cafd7f/model/model_minimind.py
 class EdgeMindAttention(nn.Module):
 
     # 结构参数全部从 EdgeMindConfig 读取，配置阶段已保证头数的整除关系。
@@ -132,7 +132,7 @@ class EdgeMindAttention(nn.Module):
         # 输出投影：把拼接后的全部查询头映射回 hidden_size 维。
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
 
-        # 注意力权重上的 dropout；配置默认为 0，此时等价于恒等映射。
+        # 保留注意力 dropout 的概率，由 SDPA 内部执行；配置默认为 0，此时不随机丢弃。
         self.attn_dropout = nn.Dropout(config.dropout)
         # 输出投影后的 dropout，同样默认不生效。
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -170,17 +170,39 @@ class EdgeMindAttention(nn.Module):
         # 把头维提到序列维之前，变为 (batch, heads, seq_len, head_dim) 以做批量矩阵乘。
         xq, xk, xv = xq.transpose(1, 2), xk.transpose(1, 2), xv.transpose(1, 2)
 
-        # 计算注意力分数并除以根号头维度；转 float32 保证后续 softmax 数值稳定。
-        scores = (xq @ xk.transpose(-2, -1)).float() / math.sqrt(self.head_dim)
-        # 因果掩码只加在最后 seq_len 列：新 token 可见全部历史，但彼此之间仍只能看过去。
-        scores[:, :, :, -seq_len:] += torch.full((seq_len, seq_len), float("-inf"), device=scores.device).triu(1)
-        # padding 掩码：把填充位置的分数压到接近 -inf，使 softmax 后的权重近似为零。
-        if attention_mask is not None:
-            scores += (1.0 - attention_mask.unsqueeze(1).unsqueeze(2)) * -1e9
-        # softmax 得到注意力权重，转回输入精度后按需施加 dropout。
-        probs = self.attn_dropout(F.softmax(scores, dim=-1).type_as(xq))
-        # 用注意力权重对值加权求和，得到每个位置的注意力输出。
-        output = probs @ xv
+        # 没有填充掩码和历史缓存时，直接使用 SDPA 内置的“只能看当前和过去”规则。
+        is_causal = attention_mask is None and past_key_value is None
+        # 默认不构造显式掩码，让 SDPA 在普通完整序列上选择合适的计算实现。
+        sdpa_mask = None
+
+        # 有填充或缓存时，明确列出每个新位置允许读取哪些键；True 表示允许读取。
+        if not is_causal:
+            # 键的总长度包含历史缓存和本次新输入，可能长于当前查询序列。
+            key_length = xk.shape[-2]
+            # 历史位置全部在新输入之前，用它偏移三角边界，避免生成时遮住已有历史。
+            past_length = key_length - seq_len
+            # 这张布尔表在所有注意力头之间共享，不生成每个头各自的 float32 分数大表。
+            sdpa_mask = torch.ones((seq_len, key_length), dtype=torch.bool, device=xq.device).tril(diagonal=past_length)
+
+            # 有填充时，同时要求键是真实内容；未来位置和填充位置都不能读取。
+            if attention_mask is not None:
+                # 将 (batch, key_length) 变为 (batch, 1, 1, key_length)，在头和查询位置上共享。
+                valid_keys = attention_mask[:, None, None, :].bool()
+                # 合并后形状为 (batch, 1, seq_len, key_length)，继续在所有注意力头之间共享。
+                sdpa_mask = sdpa_mask[None, None, :, :] & valid_keys
+
+        # 将分数计算、概率归一化和值的加权求和交给 SDPA，由 PyTorch 根据输入选择计算实现。
+        output = F.scaled_dot_product_attention(
+            # 查询、键和值已经具有相同精度，且布局均为 (batch, heads, length, head_dim)。
+            xq, xk, xv,
+            # 显式掩码已经包含因果与填充规则；没有显式掩码时由下面的 is_causal 控制。
+            attn_mask=sdpa_mask,
+            # SDPA 不会自动根据 eval 模式关闭 dropout，因此推理时必须明确传入零。
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            # 有显式掩码时传 False，避免同时启用两套因果规则；普通无缓存序列传 True。
+            is_causal=is_causal,
+            # SDPA 默认完成按头维度的缩放，无须再手动除以 sqrt(head_dim)。
+        )
 
         # 把头维并回特征维，恢复 (batch, seq_len, hidden_size)。
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
