@@ -1,0 +1,16 @@
+[
+    {
+        "name": "get_weather",
+        "description": "查询指定城市的实时天气",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "城市名称，例如北京"
+                }
+            },
+            "required": ["city"]
+        }
+    }
+]
